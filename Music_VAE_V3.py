@@ -1,5 +1,6 @@
 import sys
 import os
+from os import walk
 sys.path.append('/usr/local/lib/python2.7/site-packages')
 
 import torch
@@ -69,6 +70,7 @@ class VAE(nn.Module):
 		c = c.view(-1, 2, self.hidden_size_2)
 		h = h.permute(1, 0, 2)
 		c = c.permute(1, 0, 2)
+
 		self.hidden2 = h, c
 		out, self.hidden2 = self.lstm2(x, self.hidden2)
 		recon = self.fc3_1(out)
@@ -84,24 +86,37 @@ class VAE(nn.Module):
 
 class NotesDataset(data.Dataset):
 	def __init__(self, folder_path):
-		self.folder_path = folder_path
-		filenames = os.listdir(folder_path)
-		full_filenames = map(lambda filename: os.path.join(folder_path, filename), filenames)
-		self.full_filenames = full_filenames
+
+		filenames = []
+		for (root, dirs, files) in walk('lpd_5_cleansed'):
+			for name in files:
+				if name[:2] != '._' and name[-3:] == 'npz':
+					filenames.append(os.path.join(root, name))
+
+		self.filenames = filenames
 
 	def __len__(self):
-		return len(self.full_filenames)
+		return len(self.filenames)
 
 	def __getitem__(self, index):
-		full_filename = self.full_filenames[index]
+		filename = self.filenames[index]
 
-		multitrack = Multitrack(full_filename)
+		tracks = pypianoroll.load(filename)
+		pianoroll = tracks.tracks[1].pianoroll
+		i = 0
+		while(i<len(pianoroll)):
+			start = i
+			while(i<len(pianoroll) and np.any(pianoroll[i:i+96])):
+				i +=96
+			if i-start>=192:
+				break
+			i += 96
+		pianoroll = pianoroll[start:start+192:6, :]
 
-		piano_roll = multitrack.get_merged_pianoroll(mode = 'any')[::16, :]
-		return torch.FloatTensor(piano_roll.astype(float))
+		return torch.FloatTensor(pianoroll.astype(float))
 
 trainset = NotesDataset('Piano-midi.de/train/')
-train_loader = torch.utils.data.DataLoader(trainset, batch_size=1, shuffle=True)
+train_loader = torch.utils.data.DataLoader(trainset, batch_size=32, shuffle=True)
 
 
 def loss_function(y, x, mu, log_var):
@@ -128,7 +143,7 @@ def train(epoch):
 			print  'Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(epoch, batch_index*len(data), len(train_loader.dataset), 100.*batch_index/len(train_loader), loss.item()/len(data))
 			track = Track(pianoroll = recon.view(recon.shape[1], -1).detach().numpy())
 			track.binarize(0.2)
-			track = pypianoroll.Multitrack(tracks = [track], tempo = 30)
+			track = pypianoroll.Multitrack(tracks = [track], tempo = 120)
 			track.write('sample/sample_%d.mid' % (batch_index))
 	print '-----------------------------'
 	print 'Epoch: {} Average Loss: {:.4f}'.format(epoch, train_loss/len(train_loader.dataset))
